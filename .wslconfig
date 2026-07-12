@@ -1,0 +1,9 @@
+[wsl2]
+# Restrict the VM memory 
+memory=4GB
+
+# Force the virtual memory swap file to be tiny (default can be 8GB+)
+swap=1GB
+
+# Keep automatic drive shrinking turned on
+sparseVhd=true
