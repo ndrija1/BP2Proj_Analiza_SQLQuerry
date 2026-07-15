@@ -1,6 +1,3 @@
-# Izuzeci za svaku fazu obrade - iz tipa greske se odmah vidi ko je odbio upit.
-
-
 class QoptError(Exception):
     pass
 

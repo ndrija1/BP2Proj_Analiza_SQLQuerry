@@ -1,0 +1,9 @@
+# Python generisani fajlovi
+__pycache__/
+*.py[cod]
+
+# IDE
+.idea/
+
+# privremeni izlazi
+*.tmp

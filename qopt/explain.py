@@ -1,7 +1,3 @@
-# Ispis plana kao stablo, sa algoritmom, cenom, formulom i odbacenim
-# alternativama za svaki cvor. Interni op kljucevi ostaju engleski (po njima
-# grana optimizator), ovde se samo prevode za prikaz.
-
 from __future__ import annotations
 
 from typing import List
@@ -35,16 +31,24 @@ def render(plan: PlanNode, catalog: Catalog, query_text: str = "",
     lines.append(f"NAJBOLJI PLAN  (bafer M = {catalog.buffer_blocks} blokova, "
                  f"jedinica cene = blok transfer, model = materijalizacija)")
     lines.append(f"UKUPNA PROCENJENA CENA = {total} blok transfera")
+    lines.append(f"PROCENJENO VREME = {total * 10} ms (10 ms/transfer)")
     lines.append("=" * 72)
 
-    _render(plan, "", True, True, lines, show_alternatives)
+    _render(plan, "", True, True, lines, show_alternatives,total)
+
+    def _savet(n):
+        if n.op == "Selection" and "linearno" in n.algorithm and n.out_blocks > 20:
+            lines.append(f"SAVET: indeks na ({n.label}) bi ubrzao ovu selekciju")
+        for c in n.children:
+            _savet(c)
+    _savet(plan)
+
     lines.append("=" * 72)
     return "\n".join(lines)
 
 
 def _render(node: PlanNode, prefix: str, is_last: bool, is_root: bool,
-            lines: List[str], show_alt: bool) -> None:
-    # ASCII crtanje stabla da radi u svakoj konzoli
+            lines: List[str], show_alt: bool,total) -> None:
     connector = "" if is_root else ("\\- " if is_last else "+- ")
     own = node.node_cost(is_root)
     subtree = plan_cost(node, is_root)
@@ -52,7 +56,8 @@ def _render(node: PlanNode, prefix: str, is_last: bool, is_root: bool,
     lines.append(f"{prefix}{connector}{OP_NAMES.get(node.op, node.op)}  "
                  f"[{node.algorithm}]")
     child_prefix = prefix + ("" if is_root else ("    " if is_last else "|   "))
-    lines.append(f"{child_prefix}cena +{own}  (zbir={subtree})   "
+    pct = f"{100 * own / total:.0f}%" if total else "0%"
+    lines.append(f"{child_prefix}cena +{own} ({pct} ukupno)  (zbir={subtree})   "
                  f"~{node.out_rows} redova, {node.out_blocks} blk")
 
     if node.label:
@@ -69,6 +74,7 @@ def _render(node: PlanNode, prefix: str, is_last: bool, is_root: bool,
         lines.append(f"{child_prefix}  - isprobani algoritmi (bira se najjeftiniji): "
                      + " | ".join(node.alternatives))
 
+
     for i, child in enumerate(node.children):
         _render(child, child_prefix, i == len(node.children) - 1, False,
-                lines, show_alt)
+                lines, show_alt,total)

@@ -1,7 +1,3 @@
-# Leksicka analiza: string upita -> lista tokena.
-# Kljucne reci ne razlikuju velika/mala slova, identifikatori razlikuju
-# (u semi su nazivi tipa studentIndeks pa moraju tacno da se poklope).
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,12 +5,11 @@ from typing import List
 
 from .errors import LexError, point_at
 
-# vrste tokena
 KEYWORD = "KEYWORD"
 IDENT = "IDENT"
 NUMBER = "NUMBER"
 STRING = "STRING"
-OP = "OP"           # =, <>, !=, <, <=, >, >=
+OP = "OP"
 COMMA = "COMMA"
 DOT = "DOT"
 LPAREN = "LPAREN"
@@ -28,7 +23,7 @@ KEYWORDS = {
     "JOIN", "INNER", "LEFT", "RIGHT", "OUTER", "FULL", "ON",
     "UNION", "INTERSECT", "EXCEPT", "ALL",
     "COUNT", "SUM", "AVG", "MIN", "MAX",
-    "TRUE", "FALSE",
+    "TRUE", "FALSE", "BETWEEN", "IN", "LIKE", "LIMIT", "OFFSET"
 }
 
 AGGREGATE_FUNCS = {"COUNT", "SUM", "AVG", "MIN", "MAX"}
@@ -37,8 +32,8 @@ AGGREGATE_FUNCS = {"COUNT", "SUM", "AVG", "MIN", "MAX"}
 @dataclass
 class Token:
     type: str
-    value: str      # kljucne reci se cuvaju velikim slovima
-    pos: int        # pozicija u izvornom stringu, za poruke o greskama
+    value: str
+    pos: int
 
     def __str__(self) -> str:
         return f"{self.type}({self.value!r})"
@@ -56,26 +51,37 @@ def tokenize(text: str) -> List[Token]:
             i += 1
             continue
 
-        # interpunkcija, sve jednoznakovno
         if c == ",":
-            tokens.append(Token(COMMA, ",", i)); i += 1; continue
+            tokens.append(Token(COMMA, ",", i));
+            i += 1;
+            continue
         if c == ".":
-            tokens.append(Token(DOT, ".", i)); i += 1; continue
+            tokens.append(Token(DOT, ".", i));
+            i += 1;
+            continue
         if c == "(":
-            tokens.append(Token(LPAREN, "(", i)); i += 1; continue
+            tokens.append(Token(LPAREN, "(", i));
+            i += 1;
+            continue
         if c == ")":
-            tokens.append(Token(RPAREN, ")", i)); i += 1; continue
+            tokens.append(Token(RPAREN, ")", i));
+            i += 1;
+            continue
         if c == "*":
-            tokens.append(Token(STAR, "*", i)); i += 1; continue
+            tokens.append(Token(STAR, "*", i));
+            i += 1;
+            continue
 
-        # operatori - prvo dvoznakovni da se "<=" ne procita kao "<" pa "="
         two = text[i:i + 2]
         if two in ("<=", ">=", "<>", "!="):
-            tokens.append(Token(OP, two, i)); i += 2; continue
+            tokens.append(Token(OP, two, i));
+            i += 2;
+            continue
         if c in ("=", "<", ">"):
-            tokens.append(Token(OP, c, i)); i += 1; continue
+            tokens.append(Token(OP, c, i));
+            i += 1;
+            continue
 
-        # string u jednostrukim navodnicima
         if c == "'":
             start = i
             i += 1
@@ -89,7 +95,6 @@ def tokenize(text: str) -> List[Token]:
             tokens.append(Token(STRING, "".join(buf), start))
             continue
 
-        # broj, sa opcionim predznakom i decimalnom tackom
         if c.isdigit() or (c in "+-" and i + 1 < n and text[i + 1].isdigit()):
             start = i
             if c in "+-":
@@ -103,7 +108,6 @@ def tokenize(text: str) -> List[Token]:
             tokens.append(Token(NUMBER, text[start:i], start))
             continue
 
-        # rec: ili kljucna rec ili identifikator
         if c.isalpha() or c == "_":
             start = i
             while i < n and (text[i].isalnum() or text[i] == "_"):
@@ -115,7 +119,7 @@ def tokenize(text: str) -> List[Token]:
                 tokens.append(Token(IDENT, word, start))
             continue
 
-        raise LexError(f"neočekivani znak {c!r}\n" + point_at(text, i))
+        raise LexError(f" Znak koji ne treba tu da se nalazi:  {c!r}\n" + point_at(text, i))
 
     tokens.append(Token(EOF, "", n))
     return tokens

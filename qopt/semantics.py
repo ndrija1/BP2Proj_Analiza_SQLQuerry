@@ -1,8 +1,3 @@
-# Semanticka provera: da li upit ima smisla u odnosu na semu.
-# Proverava tabele/kolone/tipove, agregate i ogranicenja iz teksta projekta
-# (max 4 tabele, WHERE konjunkcija do 6 uslova, ORDER BY jedan atribut).
-# Usput svakoj koloni popuni .table pa kasnije faze ne moraju da pogadjaju.
-
 from __future__ import annotations
 
 from typing import Dict, List, Tuple
@@ -21,7 +16,7 @@ class Scope:
 
     def __init__(self) -> None:
         self.bindings: Dict[str, Table] = {}
-        self.order: List[str] = []      # redosled iz FROM, zbog poruka
+        self.order: List[str] = []
 
     def add(self, binding: str, table: Table) -> None:
         if binding in self.bindings:
@@ -45,13 +40,12 @@ class Scope:
                 raise SemanticError(f"tabela '{col.table}' nema kolonu '{col.name}'")
             return col.table, table
 
-        # bez kvalifikatora: kolona mora postojati u tacno jednoj tabeli
         matches = [b for b in self.order if self.bindings[b].has_attribute(col.name)]
         if not matches:
             raise SemanticError(f"nepoznata kolona '{col.name}'")
         if len(matches) > 1:
             raise SemanticError(
-                f"dvosmislena kolona '{col.name}' - postoji u "
+                f"dvosmislena kolona/ ambiguous '{col.name}' - postoji u "
                 f"{', '.join(matches)}; kvalifikujte je (npr. {matches[0]}.{col.name})"
             )
         col.table = matches[0]
@@ -64,7 +58,6 @@ def analyze(query: A.Query, catalog: Catalog) -> A.Query:
 
 
 def _analyze_query(query: A.Query, catalog: Catalog) -> List[Tuple[str, str]]:
-    # vraca izlazne kolone kao (naziv, tip) - treba za proveru UNION-a
     if isinstance(query, A.SetOperation):
         left_cols = _analyze_query(query.left, catalog)
         right_cols = _analyze_query(query.right, catalog)
@@ -82,52 +75,55 @@ def _analyze_query(query: A.Query, catalog: Catalog) -> List[Tuple[str, str]]:
     return _analyze_select(query, catalog)
 
 
-def _analyze_select(stmt: A.SelectStatement, catalog: Catalog) -> List[Tuple[str, str]]:
-    # FROM
+def _analyze_select(statement: A.SelectStatement, catalog: Catalog) -> List[Tuple[str, str]]:
     scope = Scope()
-    for ref in stmt.from_items:
+    for ref in statement.from_items:
         scope.add(ref.binding, catalog.table(ref.name))
     if len(scope.order) > MAX_TABLES:
         raise SemanticError(
             f"upit koristi {len(scope.order)} tabela; ograničenje je {MAX_TABLES}"
         )
 
-    # WHERE - broj konjunkta + tipovi; agregati ovde nisu dozvoljeni
-    if stmt.where is not None:
-        n_conditions = len(_top_level_conjuncts(stmt.where))
+    if statement.where is not None:
+        n_conditions = len(_top_level_conjuncts(statement.where))
         if n_conditions > MAX_WHERE_CONDITIONS:
             raise SemanticError(
-                f"WHERE ima {n_conditions} konjugovanih uslova; ograničenje je "
+                f"WHERE ima {n_conditions} uslova; ograničenje je "
                 f"{MAX_WHERE_CONDITIONS}"
             )
-        _check_condition(stmt.where, scope, allow_aggregates=False, where="WHERE")
+        _check_condition(statement.where, scope, allow_aggregates=False, where="WHERE")
 
-    # GROUP BY
+    if len(scope.order) >= 2:
+        spajanja = sum(
+            1 for c in A.iter_comparisons(statement.where)
+            if isinstance(c.left, A.Column) and isinstance(c.right, A.Column)
+            and c.left.table != c.right.table
+        )
+        if spajanja == 0:
+            raise SemanticError("Dekartov proizvod nije dozvoljen: nema uslova spajanja")
+
     grouped_keys = set()
-    for col in stmt.group_by:
+    for col in statement.group_by:
         binding, _ = scope.resolve(col)
         grouped_keys.add((binding, col.name))
 
-    grouping = stmt.has_aggregation
+    grouping = statement.has_aggregation
 
-    # SELECT lista
     output: List[Tuple[str, str]] = []
-    for item in stmt.select_items:
+    for item in statement.select_items:
         output.extend(_check_select_item(item, scope, grouping, grouped_keys))
 
-    # HAVING ima smisla samo uz grupisanje
-    if stmt.having is not None:
+    if statement.having is not None:
         if not grouping:
             raise SemanticError("HAVING zahteva GROUP BY ili agregat")
-        _check_condition(stmt.having, scope, allow_aggregates=True, where="HAVING")
+        _check_condition(statement.having, scope, allow_aggregates=True, where="HAVING")
 
-    # ORDER BY
-    if len(stmt.order_by) > MAX_ORDER_BY:
+    if len(statement.order_by) > MAX_ORDER_BY:
         raise SemanticError(
-            f"ORDER BY koristi {len(stmt.order_by)} atributa; ograničenje je "
+            f"ORDER BY koristi {len(statement.order_by)} atributa; ograničenje je "
             f"{MAX_ORDER_BY}"
         )
-    for oi in stmt.order_by:
+    for oi in statement.order_by:
         binding, _ = scope.resolve(oi.column)
         if grouping and (binding, oi.column.name) not in grouped_keys:
             raise SemanticError(
@@ -139,7 +135,6 @@ def _analyze_select(stmt: A.SelectStatement, catalog: Catalog) -> List[Tuple[str
 
 
 def _top_level_conjuncts(cond: A.Condition):
-    # uslovi vezani AND-om na najvisem nivou; (a OR b) je jedan uslov
     if isinstance(cond, A.And):
         out = []
         for t in cond.terms:
@@ -153,9 +148,12 @@ def _check_select_item(item, scope, grouping, grouped_keys):
 
     if isinstance(expr, A.Star):
         if grouping:
-            raise SemanticError("SELECT * se ne može kombinovati sa agregacijom")
+            raise SemanticError("SELECT * se ne moze kombinovati sa agregacijom")
+        if expr.table is not None and expr.table not in scope.bindings:
+            raise SemanticError(f"nepoznata tabela/alijas '{expr.table}' u '{expr}'")
+        bindings_to_use = [expr.table] if expr.table else scope.order
         cols = []
-        for binding in scope.order:
+        for binding in bindings_to_use:
             for attr in scope.bindings[binding].attributes:
                 cols.append((attr.name, attr.type))
         return cols
@@ -171,7 +169,7 @@ def _check_select_item(item, scope, grouping, grouped_keys):
             )
         return [(item.alias or expr.name, table.attribute(expr.name).type)]
 
-    raise SemanticError(f"nepodržana stavka u SELECT listi: {expr}")
+    raise SemanticError(f"nepodrzana stavka u SELECT listi: {expr}")
 
 
 def _aggregate_type(agg: A.Aggregate, scope: Scope) -> str:
@@ -189,10 +187,10 @@ def _aggregate_type(agg: A.Aggregate, scope: Scope) -> str:
     if agg.func in ("SUM", "AVG"):
         if not is_numeric(arg_type):
             raise SemanticError(
-                f"{agg.func} traži numeričku kolonu, a '{agg.arg}' je {arg_type}"
+                f"{agg.func} trazi numericku kolonu, a '{agg.arg}' je {arg_type}"
             )
         return "DOUBLE" if agg.func == "AVG" else arg_type
-    return arg_type    # MIN/MAX vracaju tip argumenta
+    return arg_type
 
 
 def _check_condition(cond, scope, allow_aggregates, where):
@@ -204,7 +202,7 @@ def _check_condition(cond, scope, allow_aggregates, where):
     elif isinstance(cond, A.Comparison):
         _check_comparison(cond, scope, allow_aggregates, where)
     else:
-        raise SemanticError(f"nepodržan čvor uslova: {cond}")
+        raise SemanticError(f"nepodrzan cvor uslova: {cond}")
 
 
 def _check_comparison(cmp, scope, allow_aggregates, where):
@@ -218,9 +216,17 @@ def _check_comparison(cmp, scope, allow_aggregates, where):
         )
     if cmp.op not in ("=", "<>", "!=") and (lt == "BOOL" or rt == "BOOL"):
         raise SemanticError(
-            f"ne mogu da koristim '{cmp.op}' nad logičkim vrednostima u '{cmp}'"
+            f"ne mogu da koristim '{cmp.op}' nad logickim vrednostima u '{cmp}'"
         )
 
+def _coerce_dates(left, lt, right, rt):
+    if lt == "DATE" and isinstance(right, A.Literal) and rt == "STRING":
+        right.type = "DATE"
+        return lt, "DATE"
+    if rt == "DATE" and isinstance(left, A.Literal) and lt == "STRING":
+        left.type = "DATE"
+        return "DATE", rt
+    return lt, rt
 
 def _operand_type(op, scope, allow_aggregates, where):
     if isinstance(op, A.Literal):
@@ -232,15 +238,4 @@ def _operand_type(op, scope, allow_aggregates, where):
         if not allow_aggregates:
             raise SemanticError(f"agregat '{op}' nije dozvoljen u {where}")
         return _aggregate_type(op, scope)
-    raise SemanticError(f"nepodržan operand: {op}")
-
-
-def _coerce_dates(left, lt, right, rt):
-    # 'datum >= '2024-01-01'': string literal uz DATE kolonu tretiraj kao DATE
-    if lt == "DATE" and isinstance(right, A.Literal) and rt == "STRING":
-        right.type = "DATE"
-        return lt, "DATE"
-    if rt == "DATE" and isinstance(left, A.Literal) and lt == "STRING":
-        left.type = "DATE"
-        return "DATE", rt
-    return lt, rt
+    raise SemanticError(f"nepodrzan operand: {op}")

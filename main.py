@@ -1,17 +1,8 @@
-# Ulazna tacka. Sema + velicina bafera se citaju iz JSON-a (default test.json),
-# upiti iz --query, --query-file ili sa stdin-a (vise upita razdvojiti sa ';').
-#
-# Primeri:
-#   python main.py --query "SELECT * FROM Student WHERE prosek > 9"
-#   python main.py --query-file queries/all_examples.sql
-#   python main.py --schema test.json --query "..." --debug
-
 from __future__ import annotations
 
 import argparse
 import sys
 
-# forsiraj UTF-8 da ispis (c, s, z...) ne pukne na cp1252 konzoli / redirekciji
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")
@@ -52,11 +43,11 @@ def main(argv=None) -> int:
 def run_one(query_text: str, catalog: Catalog, show_alt: bool, debug: bool) -> bool:
     """Jedan upit kroz ceo lanac; na gresku ispisi poruku i nastavi dalje."""
     try:
-        ast = parse(query_text)                     # sintaksa
+        ast = parse(query_text)
         if debug:
             print("AST:", ast)
-        analyze(ast, catalog)                       # semantika
-        plan = optimize(ast, catalog)               # optimizacija
+        analyze(ast, catalog)
+        plan = optimize(ast, catalog)
         print(render(plan, catalog, query_text, show_alternatives=show_alt))
         print()
         return True
@@ -95,7 +86,6 @@ def _read_query_source(args) -> str:
 
 
 def _split_statements(text: str):
-    # podeli po ';', preskoci prazno i '--' komentare
     cleaned = "\n".join(line for line in text.splitlines()
                         if not line.strip().startswith("--"))
     for stmt in cleaned.split(";"):

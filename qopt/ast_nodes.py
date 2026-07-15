@@ -1,14 +1,3 @@
-# Cvorovi sintaksnog stabla (AST) koje gradi parser. Ovde nema logike,
-# samo strukture podataka + __str__ za citljiv ispis.
-#
-# Podrzana gramatika, ukratko:
-#   query       := select ( (UNION|INTERSECT|EXCEPT) [ALL] select )*
-#   select      := SELECT [DISTINCT] lista FROM tabele [WHERE uslov]
-#                  [GROUP BY kolone [HAVING uslov]] [ORDER BY kolona [ASC|DESC]]
-#   uslov       := or-izraz nad poredjenjima, sa AND/OR/NOT i zagradama
-#   poredjenje  := operand (= <> != < <= > >=) operand
-#   operand     := kolona | literal
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -30,7 +19,7 @@ class Column:
 @dataclass
 class Literal:
     value: object
-    type: str   # INT, DOUBLE, STRING, DATE ili BOOL
+    type: str
 
     def __str__(self) -> str:
         if self.type in ("STRING", "DATE"):
@@ -43,8 +32,8 @@ Operand = Union[Column, Literal]
 
 @dataclass
 class Aggregate:
-    func: str                   # COUNT | SUM | AVG | MIN | MAX
-    arg: Optional[Column]       # None za COUNT(*)
+    func: str
+    arg: Optional[Column]
     distinct: bool = False
 
     def __str__(self) -> str:
@@ -54,8 +43,10 @@ class Aggregate:
 
 @dataclass
 class Star:
+    table: Optional[str] = None
+
     def __str__(self) -> str:
-        return "*"
+        return f"{self.table}.*" if self.table else "*"
 
 
 @dataclass
@@ -78,9 +69,6 @@ class Comparison:
     def __str__(self) -> str:
         return f"{self.left} {self.op} {self.right}"
 
-
-# AND i OR drze listu clanova (ne samo par) - optimizatoru je lakse da
-# razdvaja konjunkte kad su vec u ravnoj listi.
 
 @dataclass
 class And:
@@ -141,6 +129,8 @@ class SelectStatement:
     group_by: List[Column] = field(default_factory=list)
     having: Optional[Condition] = None
     order_by: List[OrderItem] = field(default_factory=list)
+    limit: Optional[int] = None
+    offset: Optional[int] = None
 
     @property
     def is_select_star(self) -> bool:
@@ -174,10 +164,10 @@ class SelectStatement:
 
 @dataclass
 class SetOperation:
-    op: str             # UNION | INTERSECT | EXCEPT
+    op: str
     left: "Query"
     right: "Query"
-    all: bool = False   # True za UNION ALL itd.
+    all: bool = False
 
     def __str__(self) -> str:
         kw = self.op + (" ALL" if self.all else "")

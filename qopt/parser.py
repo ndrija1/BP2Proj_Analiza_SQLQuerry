@@ -1,12 +1,9 @@
-# Parser rekurzivnog spusta: lista tokena -> AST. Jedna metoda po pravilu
-# gramatike. Ovde se proverava samo sintaksa; da li tabele/kolone postoje
-# proverava semantics.py.
-
 from __future__ import annotations
 
 from typing import List, Optional
 
 from . import ast_nodes as A
+from .ast_nodes import And, Comparison,Or
 from .errors import ParseError, point_at
 from .lexer import (
     AGGREGATE_FUNCS, COMMA, DOT, EOF, IDENT, KEYWORD, LPAREN, NUMBER,
@@ -20,11 +17,10 @@ def parse(text: str) -> A.Query:
 
 class Parser:
     def __init__(self, text: str):
-        self.text = text            # cuva se samo zbog strelice u greskama
+        self.text = text
         self.tokens = tokenize(text)
         self.pos = 0
 
-    # pomocne metode za rad sa tokenima
 
     def peek(self, offset: int = 0) -> Token:
         return self.tokens[min(self.pos + offset, len(self.tokens) - 1)]
@@ -65,17 +61,14 @@ class Parser:
             + point_at(self.text, t.pos)
         )
 
-    # gramatika
 
     def parse(self) -> A.Query:
         query = self.parse_set_query()
         if not self.at(EOF):
-            self.error("neočekivan tekst posle upita")
+            self.error("neocekivan tekst posle upita")
         return query
 
     def parse_set_query(self) -> A.Query:
-        # select (UNION|INTERSECT|EXCEPT [ALL] select)*
-        # svi skupovni operatori istog prioriteta, s leva na desno
         left: A.Query = self.parse_select_core()
         while self.at_keyword("UNION", "INTERSECT", "EXCEPT"):
             op = self.advance().value
@@ -111,6 +104,14 @@ class Parser:
             self.expect(KEYWORD, "BY")
             order_by = self.parse_order_list()
 
+        limit=None
+        offset=None
+        if self.match(KEYWORD, "LIMIT"):
+            limit = int(self.expect(NUMBER).value)
+            if self.match(KEYWORD, "OFFSET"):
+                offset = int(self.expect(NUMBER).value)
+
+
         return A.SelectStatement(
             select_items=select_items,
             from_items=from_items,
@@ -119,21 +120,25 @@ class Parser:
             group_by=group_by,
             having=having,
             order_by=order_by,
+            limit=limit,
+            offset=offset
         )
 
     def parse_select_list(self) -> List[A.SelectItem]:
-        items = [self.parse_select_item()]
+        ajtems = [self.parse_select_item()]
         while self.match(COMMA):
-            items.append(self.parse_select_item())
-        return items
+            ajtems.append(self.parse_select_item())
+        return ajtems
 
     def parse_select_item(self) -> A.SelectItem:
         if self.at(STAR):
             self.advance()
             return A.SelectItem(expr=A.Star())
+        if self.at(IDENT) and self.peek(1).type == DOT and self.peek(2).type == STAR:
+            tab = self.advance().value
+            self.advance(); self.advance()
+            return A.SelectItem(expr=A.Star(table=tab))
         expr = self.parse_value_expr()
-        # alijas samo uz eksplicitno AS; da je dozvoljen i bez AS, greska u
-        # kucanju tipa "SELECT ime FORM Student" bi se progutala kao alijas
         alias = None
         if self.match(KEYWORD, "AS"):
             alias = self.expect(IDENT).value
@@ -150,14 +155,13 @@ class Parser:
         distinct = self.match(KEYWORD, "DISTINCT")
         if self.at(STAR):
             self.advance()
-            arg = None      # COUNT(*)
+            arg = None
         else:
             arg = self.parse_column()
         self.expect(RPAREN)
         return A.Aggregate(func=func, arg=arg, distinct=distinct)
 
     def parse_from(self) -> List[A.TableRef]:
-        # po tekstu projekta FROM je samo lista tabela sa zarezima, bez JOIN
         tables = [self.parse_table_ref()]
         while self.match(COMMA):
             tables.append(self.parse_table_ref())
@@ -187,13 +191,12 @@ class Parser:
             col = self.parse_column()
             ascending = not self.match(KEYWORD, "DESC")
             if ascending:
-                self.match(KEYWORD, "ASC")     # ASC je podrazumevano
+                self.match(KEYWORD, "ASC")
             items.append(A.OrderItem(column=col, ascending=ascending))
             if not self.match(COMMA):
                 break
         return items
 
-    # uslovi: OR je najslabiji, pa AND, pa NOT/zagrade/poredjenje
 
     def parse_condition(self) -> A.Condition:
         terms = [self.parse_and_term()]
@@ -216,8 +219,28 @@ class Parser:
             return cond
         return self.parse_comparison()
 
-    def parse_comparison(self) -> A.Comparison:
+    def parse_comparison(self) -> And | Comparison:
         left = self.parse_operand()
+        negated = self.match(KEYWORD, "NOT")
+        if self.match(KEYWORD, "LIKE"):
+            cmp = Comparison("LIKE", left, self.parse_operand())
+            return A.Not(cmp) if negated else cmp
+        if self.match("KEYWORD","IN"):
+            self.expect(LPAREN)
+            op="<>"if negated else "="
+            join=A.And if negated else A.Or
+            terms=[Comparison(op,left,self.parse_operand())]
+            while(self.match(COMMA)):
+                terms.append(Comparison(op,left,self.parse_operand()))
+            self.expect(RPAREN)
+            return terms[0] if len(terms) == 1 else join(terms)
+        if self.match(KEYWORD, "BETWEEN"):
+            lo = self.parse_operand()
+            self.expect(KEYWORD, "AND")
+            hi = self.parse_operand()
+            between = A.And([A.Comparison(">=", left, lo), A.Comparison("<=", left, hi)])
+            return A.Not(between) if negated else between
+
         if not self.at(OP):
             self.error("očekivan operator poređenja (=, <>, <, <=, >, >=)")
         op = self.advance().value
@@ -238,7 +261,7 @@ class Parser:
             self.advance()
             return A.Literal(value=(t.value == "TRUE"), type="BOOL")
         if t.type == KEYWORD and t.value in AGGREGATE_FUNCS:
-            return self.parse_aggregate()   # agregat u uslovu -> samo HAVING
+            return self.parse_aggregate()
         if t.type == IDENT:
             return self.parse_column()
         self.error("očekivana kolona, broj, string ili agregat")
